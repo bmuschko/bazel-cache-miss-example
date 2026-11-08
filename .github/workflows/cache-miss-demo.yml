@@ -42,8 +42,8 @@ jobs:
           rm -rf ~/.cache/bazel-cache-miss-example
           bazelisk clean
           bazelisk build //... --execution_log_binary_file=/tmp/exec_log_1.pb 2>&1 | tee build.log
-          ./scripts/verify-build.sh build.log 2 0
-          bazel-bin/app.sh | tee run_1.txt
+          ./scripts/verify-build.sh build.log 1 0
+          cat bazel-bin/build_info.sh | tee run_1.txt
 
       - name: "Step 2: Rebuild after a clean"
         run: |
@@ -51,8 +51,8 @@ jobs:
           sleep 1
           bazelisk clean
           bazelisk build //... --execution_log_binary_file=/tmp/exec_log_2.pb 2>&1 | tee build.log
-          ./scripts/verify-build.sh build.log 2 0
-          bazel-bin/app.sh | tee run_2.txt
+          ./scripts/verify-build.sh build.log 1 0
+          cat bazel-bin/build_info.sh | tee run_2.txt
           if cmp -s run_1.txt run_2.txt; then
             echo "FAIL: expected a different build timestamp"
             exit 1
@@ -67,22 +67,21 @@ jobs:
           grep -qx 'bazel-out/volatile-status.txt' digests.txt
           grep -qE '^bazel-out/[^/]+/bin/build_info.sh$' digests.txt
           grep -qx 'action key of //:build_info' digests.txt
-          grep -qx 'action key of //:app' digests.txt
 
       - name: "Step 4: Apply the fix and build"
         run: |
           git apply fix.patch
           bazelisk build //... --execution_log_binary_file=/tmp/exec_log_3.pb 2>&1 | tee build.log
-          ./scripts/verify-build.sh build.log 2 0
-          bazel-bin/app.sh
+          ./scripts/verify-build.sh build.log 1 0
+          cat bazel-bin/build_info.sh
 
       - name: "Step 5: Rebuild the fixed project after a clean"
         run: |
           sleep 1
           bazelisk clean
           bazelisk build //... --execution_log_binary_file=/tmp/exec_log_4.pb 2>&1 | tee build.log
-          ./scripts/verify-build.sh build.log 0 2
-          bazel-bin/app.sh
+          ./scripts/verify-build.sh build.log 0 1
+          cat bazel-bin/build_info.sh
 
       - name: "Step 6: Compare the execution logs of the fixed project"
         run: |

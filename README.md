@@ -2,9 +2,7 @@
 
 A minimal Bazel 9 project that shows how an action stamping the current timestamp into generated code defeats the cache.
 
-The build has two `genrule` actions.
-`//:build_info` generates the shell code `build_info.sh` with the project version and the build timestamp.
-`//:app` bundles the generated code with `src/main.sh` into the executable script `app.sh`.
+The build has a single `genrule` action, `//:build_info`, that generates the shell code `build_info.sh` with the project version and the build timestamp.
 
 ## How stamping causes cache misses
 
@@ -13,7 +11,7 @@ The same action key always has to produce the same outputs, otherwise a cached r
 
 `//:build_info` sets `stamp = 1`, which adds `bazel-out/volatile-status.txt` to its inputs.
 Bazel writes a fresh `BUILD_TIMESTAMP` into that file for every build, so the action key of `//:build_info` changes with every build.
-The generated `build_info.sh` changes as well, which changes the action key of every action that consumes it, here `//:app`.
+The generated `build_info.sh` changes as well, which in a real project changes the action key of every action that consumes it.
 
 ```starlark
 genrule(
@@ -28,7 +26,7 @@ genrule(
 
 The local action cache ignores changes to `volatile-status.txt`, so an incremental build on the same machine looks fine.
 The problem appears whenever the output base is fresh, for example on CI runners, on another developer's machine, or after `bazel clean`.
-There, every build misses the disk or remote cache and reruns `//:build_info` and everything downstream of it.
+There, every build misses the disk or remote cache and reruns `//:build_info`.
 
 `.bazelrc` enables a disk cache in `~/.cache/bazel-cache-miss-example`, which survives `bazel clean` and simulates a shared remote cache.
 
@@ -49,20 +47,21 @@ bazelisk clean
 bazelisk build //... --execution_log_binary_file=/tmp/exec_log_1.pb
 ```
 
-Both actions execute because the cache is empty.
+The action executes because the cache is empty.
 
 ```
-INFO: 3 processes: 1 internal, 2 darwin-sandbox.
+INFO: 2 processes: 1 internal, 1 darwin-sandbox.
 ```
 
 The `--execution_log_binary_file` flag writes every executed action, with its inputs, outputs and action key, to `/tmp/exec_log_1.pb`.
 
 ```shell
-bazel-bin/app.sh
+cat bazel-bin/build_info.sh
 ```
 
 ```
-Hello from version 1.4.0, built at 1794153950
+BUILD_VERSION=1.4.0
+BUILD_TIMESTAMP=1794157443
 ```
 
 ## Step 2: Rebuild after a clean
@@ -72,20 +71,21 @@ bazelisk clean
 bazelisk build //... --execution_log_binary_file=/tmp/exec_log_2.pb
 ```
 
-Nothing in the workspace changed, yet both actions execute again instead of being served from the disk cache.
+Nothing in the workspace changed, yet the action executes again instead of being served from the disk cache.
 
 ```
-INFO: 3 processes: 1 internal, 2 darwin-sandbox.
+INFO: 2 processes: 1 internal, 1 darwin-sandbox.
 ```
 
-The script now reports a different timestamp.
+The generated code now contains a different timestamp.
 
 ```shell
-bazel-bin/app.sh
+cat bazel-bin/build_info.sh
 ```
 
 ```
-Hello from version 1.4.0, built at 1794153964
+BUILD_VERSION=1.4.0
+BUILD_TIMESTAMP=1794157444
 ```
 
 Repeat this step as often as you like, the result is the same every time.
@@ -117,41 +117,29 @@ It leads to a different output `build_info.sh` and a different action key.
  inputs {
    path: "bazel-out/volatile-status.txt"
    digest {
--    hash: "fbc184ddc3439f546c84be34a31a017f6dffef0140bd864b9910d0d1807019ef"
-+    hash: "d74f94dd0a835c037ba2f8d52ba580ee27f79c7363c26b1ca11bba0988b9dc51"
+-    hash: "2ebb4154bf4de28822bf596ac97289b3cbc9445b4cc9e66dd57d34d6dd1963b1"
++    hash: "02eb15002ee93191da82b3039e411a25a84d08a066c08dd652372ae3367abb7d"
      size_bytes: 67
      hash_function_name: "SHA-256"
    }
  actual_outputs {
    path: "bazel-out/darwin_arm64-fastbuild/bin/build_info.sh"
    digest {
--    hash: "d1321cf11f267819b142638b9ffb30bb5b661d972d850e0126456053de1f2038"
-+    hash: "0252414801ace8dd37915a5fc92f0ed91597ae397983f51bacda6905d69fce1a"
+-    hash: "34dcc97a3a45589625754bbd41b3d657c8a502e2b95e655ac9a22d0a00f7ab82"
++    hash: "f23db4ed4287c340a32092867086fc350d677fc8edd115354423de89660374ca"
      size_bytes: 47
      hash_function_name: "SHA-256"
    }
  remote_cacheable: true
  target_label: "//:build_info"
  digest {
--  hash: "3c05efa356f99bc1ddd034500098dc95e577df7b3d261e6ecb495aa4ad282c87"
-+  hash: "2c7529fcd3cb9c524964a1d15711412d3e5e1d2461912c4ea44a4f1d06ae10e9"
+-  hash: "2abd84aa72de795c42a6f3737108dc70003debbb0eaedda1691cae72b099332b"
++  hash: "3568bd8349eb4c494d021220a9ddeac5fa82d95633fe4ca2ed2a719a1f2f1b2a"
    size_bytes: 146
    hash_function_name: "SHA256"
  }
 ```
 
-`//:app` then sees the changed `build_info.sh` as an input, so its action key and output change too.
-
-```diff
- inputs {
-   path: "bazel-out/darwin_arm64-fastbuild/bin/build_info.sh"
-   digest {
--    hash: "d1321cf11f267819b142638b9ffb30bb5b661d972d850e0126456053de1f2038"
-+    hash: "0252414801ace8dd37915a5fc92f0ed91597ae397983f51bacda6905d69fce1a"
-     size_bytes: 47
-     hash_function_name: "SHA-256"
-   }
-```
 
 `scripts/diff-exec-logs.sh` condenses the diff to the paths and action keys whose digests differ.
 
@@ -160,9 +148,7 @@ It leads to a different output `build_info.sh` and a different action key.
 ```
 
 ```
-action key of //:app
 action key of //:build_info
-bazel-out/darwin_arm64-fastbuild/bin/app.sh
 bazel-out/darwin_arm64-fastbuild/bin/build_info.sh
 bazel-out/volatile-status.txt
 ```
@@ -189,18 +175,18 @@ git apply fix.patch
 bazelisk build //... --execution_log_binary_file=/tmp/exec_log_3.pb
 ```
 
-Both actions execute once more because their action keys changed with the fix.
+The action executes once more because its action key changed with the fix.
 
 ```
-INFO: 3 processes: 1 internal, 2 darwin-sandbox.
+INFO: 2 processes: 1 internal, 1 darwin-sandbox.
 ```
 
 ```shell
-bazel-bin/app.sh
+cat bazel-bin/build_info.sh
 ```
 
 ```
-Hello from version 1.4.0
+BUILD_VERSION=1.4.0
 ```
 
 If a build needs to record information like a timestamp or a commit, apply it to the final artifact in a step at the end of the build that is cheap to rerun, not to code that other actions consume.
@@ -212,10 +198,10 @@ bazelisk clean
 bazelisk build //... --execution_log_binary_file=/tmp/exec_log_4.pb
 ```
 
-This time both actions are served from the disk cache and nothing executes.
+This time the action is served from the disk cache and nothing executes.
 
 ```
-INFO: 3 processes: 2 disk cache hit, 1 internal.
+INFO: 2 processes: 1 disk cache hit, 1 internal.
 ```
 
 ## Step 6: Compare the execution logs of the fixed project
@@ -242,7 +228,7 @@ The only differences are the runner, which is now the disk cache, and the metric
 ./scripts/diff-exec-logs.sh /tmp/exec_log_3.txt /tmp/exec_log_4.txt
 ```
 
-Run `git checkout -- BUILD.bazel src/main.sh` to restore the original project.
+Run `git checkout -- BUILD.bazel` to restore the original project.
 
 ## GitHub Actions
 

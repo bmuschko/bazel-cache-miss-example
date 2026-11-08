@@ -8,15 +8,3 @@ genrule(
     # Exposes bazel-out/volatile-status.txt, whose BUILD_TIMESTAMP changes with every build, to the command.
     stamp = 1,
 )
-
-# Bundles the generated build info and the application code into a single script.
-genrule(
-    name = "app",
-    srcs = [
-        ":build_info",
-        "src/main.sh",
-    ],
-    outs = ["app.sh"],
-    cmd = "{ echo '#!/usr/bin/env bash'; cat $(location :build_info) $(location src/main.sh); } > $@",
-    executable = True,
-)
