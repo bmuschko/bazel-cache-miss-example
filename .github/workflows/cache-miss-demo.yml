@@ -70,7 +70,16 @@ jobs:
 
       - name: "Step 4: Apply the fix and build"
         run: |
-          git apply fix.patch
+          # Applies the edit described in the README.
+          cat > BUILD.bazel <<'EOF'
+          # Generates shell code that records the version being built.
+          genrule(
+              name = "build_info",
+              srcs = ["VERSION"],
+              outs = ["build_info.sh"],
+              cmd = "echo \"BUILD_VERSION=$$(cat $(location VERSION))\" > $@",
+          )
+          EOF
           bazelisk build //... --execution_log_binary_file=/tmp/exec_log_3.pb 2>&1 | tee build.log
           ./scripts/verify-build.sh build.log 1 0
           cat bazel-bin/build_info.sh

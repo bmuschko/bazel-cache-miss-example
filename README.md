@@ -156,22 +156,41 @@ bazel-out/volatile-status.txt
 ## Step 4: Apply the fix and build
 
 Generated code should only depend on declared inputs.
-`fix.patch` removes `stamp = 1` and the timestamp from `//:build_info`, so the generated code only depends on the checked-in `VERSION` file.
+Open `BUILD.bazel` and make two changes to `//:build_info`, so the generated code only depends on the checked-in `VERSION` file.
+
+1. Remove the `stamp = 1` attribute and the comment above it.
+2. Replace the `cmd` attribute with a command that only writes the version.
 
 ```diff
+-# Generates shell code that records when the build ran.
++# Generates shell code that records the version being built.
  genrule(
      name = "build_info",
      srcs = ["VERSION"],
      outs = ["build_info.sh"],
 -    cmd = ("{ echo \"BUILD_VERSION=$$(cat $(location VERSION))\"; " +
 -           "echo \"BUILD_TIMESTAMP=$$(grep '^BUILD_TIMESTAMP ' bazel-out/volatile-status.txt | cut -d ' ' -f 2)\"; } > $@"),
+-    # Exposes bazel-out/volatile-status.txt, whose BUILD_TIMESTAMP changes with every build, to the command.
 -    stamp = 1,
 +    cmd = "echo \"BUILD_VERSION=$$(cat $(location VERSION))\" > $@",
  )
 ```
 
+The fixed target looks like this.
+
+```starlark
+# Generates shell code that records the version being built.
+genrule(
+    name = "build_info",
+    srcs = ["VERSION"],
+    outs = ["build_info.sh"],
+    cmd = "echo \"BUILD_VERSION=$$(cat $(location VERSION))\" > $@",
+)
+```
+
+Build again.
+
 ```shell
-git apply fix.patch
 bazelisk build //... --execution_log_binary_file=/tmp/exec_log_3.pb
 ```
 
