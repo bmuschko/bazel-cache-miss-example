@@ -1,17 +1,15 @@
 # Bazel cache miss example
 
-A minimal Bazel 9 project that shows how an action stamping the current timestamp into generated code defeats the cache.
+A minimal Bazel 9 project that shows how an action writing the current timestamp into generated code defeats the cache for every action that consumes it.
 
-The build has a single `genrule` action, `//:build_info`, that generates the shell code `build_info.sh` with the project version and the build timestamp.
+The build has two `genrule` actions.
+`//:build_info` generates the shell code `build_info.sh` with the project version and the current timestamp.
+`//:app` consumes the generated code and bundles it with `src/main.sh` into the executable script `app.sh`.
 
-## How stamping causes cache misses
+## How a timestamp causes cache misses
 
-Bazel looks up an action in the cache by its action key, a digest of the command line, the environment, and the digests of all input files.
-The same action key always has to produce the same outputs, otherwise a cached result can never be reused.
-
-`//:build_info` sets `stamp = 1`, which adds `bazel-out/volatile-status.txt` to its inputs.
-Bazel writes a fresh `BUILD_TIMESTAMP` into that file for every build, so the action key of `//:build_info` changes with every build.
-The generated `build_info.sh` changes as well, which in a real project changes the action key of every action that consumes it.
+Bazel looks up an action in the cache by its action key, a digest of the command line, the environment, and the contents of all input files.
+The key is computed before the action runs, so it does not cover the outputs.
 
 ```starlark
 genrule(
@@ -19,14 +17,19 @@ genrule(
     srcs = ["VERSION"],
     outs = ["build_info.sh"],
     cmd = ("{ echo \"BUILD_VERSION=$$(cat $(location VERSION))\"; " +
-           "echo \"BUILD_TIMESTAMP=$$(grep '^BUILD_TIMESTAMP ' bazel-out/volatile-status.txt | cut -d ' ' -f 2)\"; } > $@"),
-    stamp = 1,
+           "echo \"BUILD_TIMESTAMP=$$(date +%s)\"; } > $@"),
+    tags = ["no-cache"],
 )
 ```
 
-The local action cache ignores changes to `volatile-status.txt`, so an incremental build on the same machine looks fine.
-The problem appears whenever the output base is fresh, for example on CI runners, on another developer's machine, or after `bazel clean`.
-There, every build misses the disk or remote cache and reruns `//:build_info`.
+`//:build_info` is tagged `no-cache`, so Bazel never stores or reuses its result and executes it on every build.
+This stands in for any reason a producer executes again, for example a non-cacheable action, a build on another machine, or a change to one of its own inputs.
+Every time it executes, `date` writes a different timestamp into `build_info.sh`.
+
+`//:app` lists `build_info.sh` as an input, so a different timestamp means a different action key for `//:app` and a cache miss.
+In a real project the consumers are compile and link actions, so one timestamp makes everything downstream rebuild.
+
+Without the `no-cache` tag, the cache would return the first `build_info.sh` forever, because the action key of `//:build_info` never changes.
 
 `.bazelrc` enables a disk cache in `~/.cache/bazel-cache-miss-example`, which survives `bazel clean` and simulates a shared remote cache.
 
@@ -47,10 +50,10 @@ bazelisk clean
 bazelisk build //... --execution_log_binary_file=/tmp/exec_log_1.pb
 ```
 
-The action executes because the cache is empty.
+Both actions execute because the cache is empty.
 
 ```
-INFO: 2 processes: 1 internal, 1 darwin-sandbox.
+INFO: 3 processes: 1 internal, 2 darwin-sandbox.
 ```
 
 The `--execution_log_binary_file` flag writes every executed action, with its inputs, outputs and action key, to `/tmp/exec_log_1.pb`.
@@ -61,20 +64,24 @@ cat bazel-bin/build_info.sh
 
 ```
 BUILD_VERSION=1.4.0
-BUILD_TIMESTAMP=1794157443
+BUILD_TIMESTAMP=1794160098
 ```
 
 ## Step 2: Rebuild after a clean
+
+`bazelisk clean` deletes the output base and the local action cache, just like a fresh CI runner or another developer's machine.
+Only the disk cache is left to avoid executing actions.
 
 ```shell
 bazelisk clean
 bazelisk build //... --execution_log_binary_file=/tmp/exec_log_2.pb
 ```
 
-Nothing in the workspace changed, yet the action executes again instead of being served from the disk cache.
+Nothing in the workspace changed, yet both actions execute again.
+`//:build_info` is never cached, and `//:app` misses the disk cache.
 
 ```
-INFO: 2 processes: 1 internal, 1 darwin-sandbox.
+INFO: 3 processes: 1 internal, 2 darwin-sandbox.
 ```
 
 The generated code now contains a different timestamp.
@@ -85,7 +92,7 @@ cat bazel-bin/build_info.sh
 
 ```
 BUILD_VERSION=1.4.0
-BUILD_TIMESTAMP=1794157444
+BUILD_TIMESTAMP=1794160100
 ```
 
 Repeat this step as often as you like, the result is the same every time.
@@ -110,36 +117,43 @@ diff -u /tmp/exec_log_1.txt /tmp/exec_log_2.txt
 ```
 
 Ignore the differences under `metrics`, they only record timings.
-The first differing input of `//:build_info` is `volatile-status.txt`, which is the root cause.
-It leads to a different output `build_info.sh` and a different action key.
+`//:build_info` has the same inputs in both builds, but its output `build_info.sh` differs.
+It has no action key in the log because it is not cacheable.
 
 ```diff
- inputs {
-   path: "bazel-out/volatile-status.txt"
-   digest {
--    hash: "2ebb4154bf4de28822bf596ac97289b3cbc9445b4cc9e66dd57d34d6dd1963b1"
-+    hash: "02eb15002ee93191da82b3039e411a25a84d08a066c08dd652372ae3367abb7d"
-     size_bytes: 67
-     hash_function_name: "SHA-256"
-   }
  actual_outputs {
    path: "bazel-out/darwin_arm64-fastbuild/bin/build_info.sh"
    digest {
--    hash: "34dcc97a3a45589625754bbd41b3d657c8a502e2b95e655ac9a22d0a00f7ab82"
-+    hash: "f23db4ed4287c340a32092867086fc350d677fc8edd115354423de89660374ca"
+-    hash: "d49dafa4ad617de412e35ec0112cd7c77f1d5ad211eb917d17555898cb305e65"
++    hash: "eb5b2b08cec2c405792b4a0a77377ea0e44a5cc169a3b1b68a97943267cd991e"
      size_bytes: 47
      hash_function_name: "SHA-256"
    }
- remote_cacheable: true
- target_label: "//:build_info"
+```
+
+`//:app` sees the changed `build_info.sh` as an input, which changes its action key, the `digest` after `target_label`.
+That is the cache miss.
+
+```diff
+ inputs {
+   path: "bazel-out/darwin_arm64-fastbuild/bin/build_info.sh"
+   digest {
+-    hash: "d49dafa4ad617de412e35ec0112cd7c77f1d5ad211eb917d17555898cb305e65"
++    hash: "eb5b2b08cec2c405792b4a0a77377ea0e44a5cc169a3b1b68a97943267cd991e"
+     size_bytes: 47
+     hash_function_name: "SHA-256"
+   }
+```
+
+```diff
+ target_label: "//:app"
  digest {
--  hash: "2abd84aa72de795c42a6f3737108dc70003debbb0eaedda1691cae72b099332b"
-+  hash: "3568bd8349eb4c494d021220a9ddeac5fa82d95633fe4ca2ed2a719a1f2f1b2a"
+-  hash: "bd146eeec716e06bd08bc12b84e4c793876cf87c419cf02ab18b63571e605403"
++  hash: "61e65720127f7108e437318aa81841e5887fa894d11257063ce6719a36665dbd"
    size_bytes: 146
    hash_function_name: "SHA256"
  }
 ```
-
 
 `scripts/diff-exec-logs.sh` condenses the diff to the paths and action keys whose digests differ.
 
@@ -148,18 +162,15 @@ It leads to a different output `build_info.sh` and a different action key.
 ```
 
 ```
-action key of //:build_info
+action key of //:app
+bazel-out/darwin_arm64-fastbuild/bin/app.sh
 bazel-out/darwin_arm64-fastbuild/bin/build_info.sh
-bazel-out/volatile-status.txt
 ```
 
 ## Step 4: Apply the fix and build
 
 Generated code should only depend on declared inputs.
-Open `BUILD.bazel` and make two changes to `//:build_info`, so the generated code only depends on the checked-in `VERSION` file.
-
-1. Remove the `stamp = 1` attribute and the comment above it.
-2. Replace the `cmd` attribute with a command that only writes the version.
+Open `BUILD.bazel` and replace the `cmd` attribute of `//:build_info` with a command that only writes the version from the checked-in `VERSION` file.
 
 ```diff
 -# Generates shell code that records when the build ran.
@@ -169,35 +180,23 @@ Open `BUILD.bazel` and make two changes to `//:build_info`, so the generated cod
      srcs = ["VERSION"],
      outs = ["build_info.sh"],
 -    cmd = ("{ echo \"BUILD_VERSION=$$(cat $(location VERSION))\"; " +
--           "echo \"BUILD_TIMESTAMP=$$(grep '^BUILD_TIMESTAMP ' bazel-out/volatile-status.txt | cut -d ' ' -f 2)\"; } > $@"),
--    # Exposes bazel-out/volatile-status.txt, whose BUILD_TIMESTAMP changes with every build, to the command.
--    stamp = 1,
+-           "echo \"BUILD_TIMESTAMP=$$(date +%s)\"; } > $@"),
 +    cmd = "echo \"BUILD_VERSION=$$(cat $(location VERSION))\" > $@",
+     # Executes the action on every build instead of reusing a cached result.
+     tags = ["no-cache"],
  )
 ```
 
-The fixed target looks like this.
-
-```starlark
-# Generates shell code that records the version being built.
-genrule(
-    name = "build_info",
-    srcs = ["VERSION"],
-    outs = ["build_info.sh"],
-    cmd = "echo \"BUILD_VERSION=$$(cat $(location VERSION))\" > $@",
-)
-```
-
-Build again.
+Keep the `no-cache` tag, so `//:build_info` still executes on every build.
 
 ```shell
 bazelisk build //... --execution_log_binary_file=/tmp/exec_log_3.pb
 ```
 
-The action executes once more because its action key changed with the fix.
+Both actions execute once more because the content of `build_info.sh` changed with the fix.
 
 ```
-INFO: 2 processes: 1 internal, 1 darwin-sandbox.
+INFO: 3 processes: 1 internal, 2 darwin-sandbox.
 ```
 
 ```shell
@@ -217,10 +216,11 @@ bazelisk clean
 bazelisk build //... --execution_log_binary_file=/tmp/exec_log_4.pb
 ```
 
-This time the action is served from the disk cache and nothing executes.
+`//:build_info` still executes, but it produces the same `build_info.sh` as before.
+`//:app` therefore has the same action key and is served from the disk cache.
 
 ```
-INFO: 2 processes: 1 disk cache hit, 1 internal.
+INFO: 3 processes: 1 disk cache hit, 1 internal, 1 darwin-sandbox.
 ```
 
 ## Step 6: Compare the execution logs of the fixed project
@@ -233,7 +233,7 @@ diff -u /tmp/exec_log_3.txt /tmp/exec_log_4.txt
 ```
 
 All digests are identical.
-The only differences are the runner, which is now the disk cache, and the metrics.
+The only differences are the runner of `//:app`, which is now the disk cache, and the metrics.
 
 ```diff
 -runner: "darwin-sandbox"

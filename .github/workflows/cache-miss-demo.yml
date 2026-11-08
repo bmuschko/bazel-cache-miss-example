@@ -42,16 +42,16 @@ jobs:
           rm -rf ~/.cache/bazel-cache-miss-example
           bazelisk clean
           bazelisk build //... --execution_log_binary_file=/tmp/exec_log_1.pb 2>&1 | tee build.log
-          ./scripts/verify-build.sh build.log 1 0
+          ./scripts/verify-build.sh build.log 2 0
           cat bazel-bin/build_info.sh | tee run_1.txt
 
       - name: "Step 2: Rebuild after a clean"
         run: |
-          # Ensures BUILD_TIMESTAMP, which has a resolution of one second, moves forward.
+          # Ensures the timestamp, which has a resolution of one second, moves forward.
           sleep 1
           bazelisk clean
           bazelisk build //... --execution_log_binary_file=/tmp/exec_log_2.pb 2>&1 | tee build.log
-          ./scripts/verify-build.sh build.log 1 0
+          ./scripts/verify-build.sh build.log 2 0
           cat bazel-bin/build_info.sh | tee run_2.txt
           if cmp -s run_1.txt run_2.txt; then
             echo "FAIL: expected a different build timestamp"
@@ -64,9 +64,8 @@ jobs:
             --output_path=/tmp/exec_log_1.txt --output_path=/tmp/exec_log_2.txt
           diff -u /tmp/exec_log_1.txt /tmp/exec_log_2.txt || true
           ./scripts/diff-exec-logs.sh /tmp/exec_log_1.txt /tmp/exec_log_2.txt | tee digests.txt
-          grep -qx 'bazel-out/volatile-status.txt' digests.txt
           grep -qE '^bazel-out/[^/]+/bin/build_info.sh$' digests.txt
-          grep -qx 'action key of //:build_info' digests.txt
+          grep -qx 'action key of //:app' digests.txt
 
       - name: "Step 4: Apply the fix and build"
         run: |
@@ -78,10 +77,24 @@ jobs:
               srcs = ["VERSION"],
               outs = ["build_info.sh"],
               cmd = "echo \"BUILD_VERSION=$$(cat $(location VERSION))\" > $@",
+              # Executes the action on every build instead of reusing a cached result.
+              tags = ["no-cache"],
+          )
+
+          # Bundles the generated build info and the application code into a single script.
+          genrule(
+              name = "app",
+              srcs = [
+                  ":build_info",
+                  "src/main.sh",
+              ],
+              outs = ["app.sh"],
+              cmd = "{ echo '#!/usr/bin/env bash'; cat $(location :build_info) $(location src/main.sh); } > $@",
+              executable = True,
           )
           EOF
           bazelisk build //... --execution_log_binary_file=/tmp/exec_log_3.pb 2>&1 | tee build.log
-          ./scripts/verify-build.sh build.log 1 0
+          ./scripts/verify-build.sh build.log 2 0
           cat bazel-bin/build_info.sh
 
       - name: "Step 5: Rebuild the fixed project after a clean"
@@ -89,7 +102,7 @@ jobs:
           sleep 1
           bazelisk clean
           bazelisk build //... --execution_log_binary_file=/tmp/exec_log_4.pb 2>&1 | tee build.log
-          ./scripts/verify-build.sh build.log 0 1
+          ./scripts/verify-build.sh build.log 1 1
           cat bazel-bin/build_info.sh
 
       - name: "Step 6: Compare the execution logs of the fixed project"
