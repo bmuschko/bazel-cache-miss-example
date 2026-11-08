@@ -1,0 +1,5 @@
+/bazel-*
+MODULE.bazel.lock
+build.log
+digests.txt
+run_*.txt

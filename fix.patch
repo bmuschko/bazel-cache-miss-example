@@ -1,0 +1,26 @@
+diff --git a/BUILD.bazel b/BUILD.bazel
+index b758ae8..b77cf83 100644
+--- a/BUILD.bazel
++++ b/BUILD.bazel
+@@ -1,12 +1,9 @@
+-# Generates shell code that records when the build ran.
++# Generates shell code that records the version being built.
+ genrule(
+     name = "build_info",
+     srcs = ["VERSION"],
+     outs = ["build_info.sh"],
+-    cmd = ("{ echo \"BUILD_VERSION=$$(cat $(location VERSION))\"; " +
+-           "echo \"BUILD_TIMESTAMP=$$(grep '^BUILD_TIMESTAMP ' bazel-out/volatile-status.txt | cut -d ' ' -f 2)\"; } > $@"),
+-    # Exposes bazel-out/volatile-status.txt, whose BUILD_TIMESTAMP changes with every build, to the command.
+-    stamp = 1,
++    cmd = "echo \"BUILD_VERSION=$$(cat $(location VERSION))\" > $@",
+ )
+ 
+ # Bundles the generated build info and the application code into a single script.
+diff --git a/src/main.sh b/src/main.sh
+index fc2cd43..f19b0fe 100644
+--- a/src/main.sh
++++ b/src/main.sh
+@@ -1 +1 @@
+-echo "Hello from version ${BUILD_VERSION}, built at ${BUILD_TIMESTAMP}"
++echo "Hello from version ${BUILD_VERSION}"

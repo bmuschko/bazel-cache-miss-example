@@ -1,0 +1,95 @@
+name: Bazel cache miss demo
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  cache-miss:
+    name: Cache miss (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      PARSER: ${{ github.workspace }}/../bazel/bazel-bin/src/tools/execlog/parser
+    steps:
+      - uses: actions/checkout@v7
+      - uses: bazel-contrib/setup-bazel@0.19.1
+        with:
+          bazelisk-version: 1.30.0
+          bazelisk-cache: true
+
+      - name: Build the execution log parser
+        run: |
+          git clone --quiet --depth 1 --branch "$(cat .bazelversion)" https://github.com/bazelbuild/bazel.git ../bazel
+          (cd ../bazel && bazelisk build //src/tools/execlog:parser)
+          test -x "${PARSER}"
+
+      - name: "Step 1: Build with an empty disk cache"
+        run: |
+          rm -rf ~/.cache/bazel-cache-miss-example
+          bazelisk clean
+          bazelisk build //... --execution_log_binary_file=/tmp/exec_log_1.pb 2>&1 | tee build.log
+          ./scripts/verify-build.sh build.log 2 0
+          bazel-bin/app.sh | tee run_1.txt
+
+      - name: "Step 2: Rebuild after a clean"
+        run: |
+          # Ensures BUILD_TIMESTAMP, which has a resolution of one second, moves forward.
+          sleep 1
+          bazelisk clean
+          bazelisk build //... --execution_log_binary_file=/tmp/exec_log_2.pb 2>&1 | tee build.log
+          ./scripts/verify-build.sh build.log 2 0
+          bazel-bin/app.sh | tee run_2.txt
+          if cmp -s run_1.txt run_2.txt; then
+            echo "FAIL: expected a different build timestamp"
+            exit 1
+          fi
+
+      - name: "Step 3: Compare the execution logs"
+        run: |
+          "${PARSER}" --log_path=/tmp/exec_log_1.pb --log_path=/tmp/exec_log_2.pb \
+            --output_path=/tmp/exec_log_1.txt --output_path=/tmp/exec_log_2.txt
+          diff -u /tmp/exec_log_1.txt /tmp/exec_log_2.txt || true
+          ./scripts/diff-exec-logs.sh /tmp/exec_log_1.txt /tmp/exec_log_2.txt | tee digests.txt
+          grep -qx 'bazel-out/volatile-status.txt' digests.txt
+          grep -qE '^bazel-out/[^/]+/bin/build_info.sh$' digests.txt
+          grep -qx 'action key of //:build_info' digests.txt
+          grep -qx 'action key of //:app' digests.txt
+
+      - name: "Step 4: Apply the fix and build"
+        run: |
+          git apply fix.patch
+          bazelisk build //... --execution_log_binary_file=/tmp/exec_log_3.pb 2>&1 | tee build.log
+          ./scripts/verify-build.sh build.log 2 0
+          bazel-bin/app.sh
+
+      - name: "Step 5: Rebuild the fixed project after a clean"
+        run: |
+          sleep 1
+          bazelisk clean
+          bazelisk build //... --execution_log_binary_file=/tmp/exec_log_4.pb 2>&1 | tee build.log
+          ./scripts/verify-build.sh build.log 0 2
+          bazel-bin/app.sh
+
+      - name: "Step 6: Compare the execution logs of the fixed project"
+        run: |
+          "${PARSER}" --log_path=/tmp/exec_log_3.pb --log_path=/tmp/exec_log_4.pb \
+            --output_path=/tmp/exec_log_3.txt --output_path=/tmp/exec_log_4.txt
+          diff -u /tmp/exec_log_3.txt /tmp/exec_log_4.txt || true
+          ./scripts/diff-exec-logs.sh /tmp/exec_log_3.txt /tmp/exec_log_4.txt | tee digests.txt
+          if [[ -s digests.txt ]]; then
+            echo "FAIL: expected identical digests"
+            exit 1
+          fi

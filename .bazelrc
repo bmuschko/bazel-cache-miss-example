@@ -1,0 +1,5 @@
+# Keeps log output free of ANSI codes so the process summary can be parsed.
+common --color=no
+
+# Stores action results outside the output base so they survive a bazel clean.
+build --disk_cache=~/.cache/bazel-cache-miss-example
