@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
-# Prints every file and action key whose digest differs between two parsed execution logs.
+# Prints every file and action key whose digest differs between two JSON execution logs.
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
-  echo "usage: $0 <exec-log-1.txt> <exec-log-2.txt>" >&2
+  echo "usage: $0 <exec-log-1.json> <exec-log-2.json>" >&2
   exit 2
 fi
 
 # Pairs each digest with the input or output path it belongs to, or with the target label for the action key.
 digests() {
-  awk '
-    /^ *path: / { key = $2 }
-    /^target_label: / { key = "action key of " $2 }
-    /^ *hash: / && key != "" { gsub(/"/, "", key); gsub(/"/, "", $2); print key "\t" $2; key = "" }
+  jq -r '
+    ((.inputs // []) + (.actualOutputs // []) | .[] | "\(.path)\t\(.digest.hash)"),
+    (select(.digest) | "action key of \(.targetLabel)\t\(.digest.hash)")
   ' "$1" | sort -u
 }
 

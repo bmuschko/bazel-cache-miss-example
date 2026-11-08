@@ -39,6 +39,8 @@ Install [Bazelisk](https://github.com/bazelbuild/bazelisk).
 It reads `.bazelversion` and downloads the pinned Bazel version on first use.
 The commands below call `bazelisk`. If Bazelisk is installed as `bazel`, use that name instead.
 
+Install [jq](https://jqlang.org/), which `scripts/diff-exec-logs.sh` uses to read the execution logs.
+
 Watch the `INFO: N processes: ...` line near the end of each build's output.
 On Linux the strategy is `linux-sandbox` or `processwrapper-sandbox` instead of `darwin-sandbox`, and output paths start with `bazel-out/k8-fastbuild` instead of `bazel-out/darwin_arm64-fastbuild`.
 
@@ -47,7 +49,7 @@ On Linux the strategy is `linux-sandbox` or `processwrapper-sandbox` instead of 
 ```shell
 rm -rf ~/.cache/bazel-cache-miss-example
 bazelisk clean
-bazelisk build //... --execution_log_binary_file=/tmp/exec_log_1.pb
+bazelisk build //... --execution_log_json_file=/tmp/exec_log_1.json
 ```
 
 Both actions execute because the cache is empty.
@@ -56,7 +58,8 @@ Both actions execute because the cache is empty.
 INFO: 3 processes: 1 internal, 2 darwin-sandbox.
 ```
 
-The `--execution_log_binary_file` flag writes every executed action, with its inputs, outputs and action key, to `/tmp/exec_log_1.pb`.
+The `--execution_log_json_file` flag writes every executed action, with its inputs, outputs and action key, to `/tmp/exec_log_1.json`.
+Bazel sorts the actions, so the logs of two builds can be compared with a plain `diff`.
 
 ```shell
 cat bazel-bin/build_info.sh
@@ -64,7 +67,7 @@ cat bazel-bin/build_info.sh
 
 ```
 BUILD_VERSION=1.4.0
-BUILD_TIMESTAMP=1794160098
+BUILD_TIMESTAMP=1794160418
 ```
 
 ## Step 2: Rebuild after a clean
@@ -74,7 +77,7 @@ Only the disk cache is left to avoid executing actions.
 
 ```shell
 bazelisk clean
-bazelisk build //... --execution_log_binary_file=/tmp/exec_log_2.pb
+bazelisk build //... --execution_log_json_file=/tmp/exec_log_2.json
 ```
 
 Nothing in the workspace changed, yet both actions execute again.
@@ -92,28 +95,15 @@ cat bazel-bin/build_info.sh
 
 ```
 BUILD_VERSION=1.4.0
-BUILD_TIMESTAMP=1794160100
+BUILD_TIMESTAMP=1794160419
 ```
 
 Repeat this step as often as you like, the result is the same every time.
 
 ## Step 3: Compare the execution logs
 
-The binary execution logs need to be converted to text with the parser that ships with the Bazel source code.
-Check out the Bazel version used by this project and build the parser.
-
 ```shell
-git clone --depth 1 --branch "$(cat .bazelversion)" https://github.com/bazelbuild/bazel.git /tmp/bazel
-(cd /tmp/bazel && bazelisk build //src/tools/execlog:parser)
-```
-
-Convert both logs in one invocation, so the parser orders the actions of the second log to match the first one.
-
-```shell
-/tmp/bazel/bazel-bin/src/tools/execlog/parser \
-  --log_path=/tmp/exec_log_1.pb --log_path=/tmp/exec_log_2.pb \
-  --output_path=/tmp/exec_log_1.txt --output_path=/tmp/exec_log_2.txt
-diff -u /tmp/exec_log_1.txt /tmp/exec_log_2.txt
+diff -u /tmp/exec_log_1.json /tmp/exec_log_2.json
 ```
 
 Ignore the differences under `metrics`, they only record timings.
@@ -121,44 +111,44 @@ Ignore the differences under `metrics`, they only record timings.
 It has no action key in the log because it is not cacheable.
 
 ```diff
- actual_outputs {
-   path: "bazel-out/darwin_arm64-fastbuild/bin/build_info.sh"
-   digest {
--    hash: "d49dafa4ad617de412e35ec0112cd7c77f1d5ad211eb917d17555898cb305e65"
-+    hash: "eb5b2b08cec2c405792b4a0a77377ea0e44a5cc169a3b1b68a97943267cd991e"
-     size_bytes: 47
-     hash_function_name: "SHA-256"
-   }
+   "actualOutputs": [{
+     "path": "bazel-out/darwin_arm64-fastbuild/bin/build_info.sh",
+     "digest": {
+-      "hash": "d17c2f1e3d54beb7162d3c1a012f58f9f473f1d6f4cb7a091743cfec91e71f2f",
++      "hash": "86201f6226ef8ef2e02dfcfdde8a1c5c8820952cbf95a99222af9f672d085f65",
+       "sizeBytes": "47",
+       "hashFunctionName": "SHA-256"
+     },
 ```
 
-`//:app` sees the changed `build_info.sh` as an input, which changes its action key, the `digest` after `target_label`.
+`//:app` sees the changed `build_info.sh` as an input, which changes its action key, the `digest` after `targetLabel`.
 That is the cache miss.
 
 ```diff
- inputs {
-   path: "bazel-out/darwin_arm64-fastbuild/bin/build_info.sh"
-   digest {
--    hash: "d49dafa4ad617de412e35ec0112cd7c77f1d5ad211eb917d17555898cb305e65"
-+    hash: "eb5b2b08cec2c405792b4a0a77377ea0e44a5cc169a3b1b68a97943267cd991e"
-     size_bytes: 47
-     hash_function_name: "SHA-256"
-   }
+   "inputs": [{
+     "path": "bazel-out/darwin_arm64-fastbuild/bin/build_info.sh",
+     "digest": {
+-      "hash": "d17c2f1e3d54beb7162d3c1a012f58f9f473f1d6f4cb7a091743cfec91e71f2f",
++      "hash": "86201f6226ef8ef2e02dfcfdde8a1c5c8820952cbf95a99222af9f672d085f65",
+       "sizeBytes": "47",
+       "hashFunctionName": "SHA-256"
+     },
 ```
 
 ```diff
- target_label: "//:app"
- digest {
--  hash: "bd146eeec716e06bd08bc12b84e4c793876cf87c419cf02ab18b63571e605403"
-+  hash: "61e65720127f7108e437318aa81841e5887fa894d11257063ce6719a36665dbd"
-   size_bytes: 146
-   hash_function_name: "SHA256"
- }
+   "targetLabel": "//:app",
+   "digest": {
+-    "hash": "34d89a8a611200b12faf6ce7a2a1bdd31d0188202058c4efdba56b2f3c832059",
++    "hash": "f167552a80cb52b5948b7612234b1a5998b60b75a9e89c14522a630f208f25a3",
+     "sizeBytes": "146",
+     "hashFunctionName": "SHA256"
+   },
 ```
 
 `scripts/diff-exec-logs.sh` condenses the diff to the paths and action keys whose digests differ.
 
 ```shell
-./scripts/diff-exec-logs.sh /tmp/exec_log_1.txt /tmp/exec_log_2.txt
+./scripts/diff-exec-logs.sh /tmp/exec_log_1.json /tmp/exec_log_2.json
 ```
 
 ```
@@ -190,7 +180,7 @@ Open `BUILD.bazel` and replace the `cmd` attribute of `//:build_info` with a com
 Keep the `no-cache` tag, so `//:build_info` still executes on every build.
 
 ```shell
-bazelisk build //... --execution_log_binary_file=/tmp/exec_log_3.pb
+bazelisk build //... --execution_log_json_file=/tmp/exec_log_3.json
 ```
 
 Both actions execute once more because the content of `build_info.sh` changed with the fix.
@@ -213,7 +203,7 @@ If a build needs to record information like a timestamp or a commit, apply it to
 
 ```shell
 bazelisk clean
-bazelisk build //... --execution_log_binary_file=/tmp/exec_log_4.pb
+bazelisk build //... --execution_log_json_file=/tmp/exec_log_4.json
 ```
 
 `//:build_info` still executes, but it produces the same `build_info.sh` as before.
@@ -226,25 +216,23 @@ INFO: 3 processes: 1 disk cache hit, 1 internal, 1 darwin-sandbox.
 ## Step 6: Compare the execution logs of the fixed project
 
 ```shell
-/tmp/bazel/bazel-bin/src/tools/execlog/parser \
-  --log_path=/tmp/exec_log_3.pb --log_path=/tmp/exec_log_4.pb \
-  --output_path=/tmp/exec_log_3.txt --output_path=/tmp/exec_log_4.txt
-diff -u /tmp/exec_log_3.txt /tmp/exec_log_4.txt
+diff -u /tmp/exec_log_3.json /tmp/exec_log_4.json
 ```
 
 All digests are identical.
 The only differences are the runner of `//:app`, which is now the disk cache, and the metrics.
 
 ```diff
--runner: "darwin-sandbox"
-+runner: "disk cache hit"
-+cache_hit: true
+-  "runner": "darwin-sandbox",
+-  "cacheHit": false,
++  "runner": "disk cache hit",
++  "cacheHit": true,
 ```
 
 `scripts/diff-exec-logs.sh` prints nothing.
 
 ```shell
-./scripts/diff-exec-logs.sh /tmp/exec_log_3.txt /tmp/exec_log_4.txt
+./scripts/diff-exec-logs.sh /tmp/exec_log_3.json /tmp/exec_log_4.json
 ```
 
 Run `git checkout -- BUILD.bazel` to restore the original project.
