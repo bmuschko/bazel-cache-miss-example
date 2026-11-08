@@ -33,7 +33,8 @@ jobs:
       - name: Build the execution log parser
         run: |
           git clone --quiet --depth 1 --branch "$(cat .bazelversion)" https://github.com/bazelbuild/bazel.git ../bazel
-          (cd ../bazel && bazelisk build //src/tools/execlog:parser)
+          # Uses a separate output base, so a bazel clean in this project does not delete the parser.
+          (cd ../bazel && bazelisk --output_base="${RUNNER_TEMP}/bazel-execlog-parser" build //src/tools/execlog:parser)
           test -x "${PARSER}"
 
       - name: "Step 1: Build with an empty disk cache"
